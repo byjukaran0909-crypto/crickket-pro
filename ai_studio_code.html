@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Pro Cricket Mobile</title>
+    <style>
+        body { 
+            margin: 0; background: #1a1a1a; font-family: 'Segoe UI', sans-serif; 
+            overflow: hidden; color: white; display: flex; flex-direction: column; align-items: center;
+            touch-action: manipulation; /* Prevents double-tap zoom */
+        }
+        
+        canvas { 
+            background: #2d5a27; border-bottom: 5px solid #444; 
+            max-width: 100%; height: auto; touch-action: none;
+        }
+        
+        #ui-layer { position: absolute; top: 10px; text-align: center; width: 100%; pointer-events: none; }
+        
+        .menu { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
+            background: rgba(0,0,0,0.9); display: flex; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 100;
+        }
+
+        #scorecard {
+            width: 100%; background: #001f3f; display: flex; 
+            justify-content: space-around; padding: 10px 0; border-top: 3px solid #FFDC00;
+            font-size: 0.9rem; font-weight: bold;
+        }
+
+        /* Mobile Controls */
+        #controls {
+            width: 100%; height: 150px; display: flex; justify-content: space-between;
+            align-items: center; background: #222; padding: 10px; box-sizing: border-box;
+        }
+
+        .btn-group { display: flex; gap: 10px; }
+        .ctrl-btn {
+            width: 70px; height: 70px; background: #444; border-radius: 50%;
+            display: flex; justify-content: center; align-items: center;
+            user-select: none; -webkit-user-select: none; border: 2px solid #666;
+            font-weight: bold; font-size: 1.2rem; active: scale(0.9);
+        }
+        #action-btn { width: 90px; height: 90px; background: #e74c3c; border-color: #ff7675; }
+
+        button.team-select { padding: 15px; margin: 5px; width: 200px; background: #FFDC00; border: none; font-weight: bold; }
+        
+        #power-container {
+            position: absolute; right: 10px; top: 50px; width: 15px; height: 150px;
+            background: #333; border: 1px solid white; display: none;
+        }
+        #power-fill { width: 100%; height: 0%; background: linear-gradient(to top, green, yellow, red); position: absolute; bottom: 0; }
+    </style>
+</head>
+<body>
+
+    <div id="setup-menu" class="menu">
+        <h1>CRICKET PRO MOBILE</h1>
+        <p>Choose Team</p>
+        <div id="team-list"></div>
+    </div>
+
+    <div id="ui-layer">
+        <h2 id="msg-display"></h2>
+    </div>
+
+    <canvas id="gameCanvas" width="400" height="500"></canvas>
+
+    <div id="power-container">
+        <div id="power-fill"></div>
+    </div>
+
+    <div id="scorecard">
+        <div id="sc-team">INDIA</div>
+        <div id="sc-score">0 - 0</div>
+        <div id="sc-overs">OVERS: 0.0</div>
+    </div>
+
+    <!-- Mobile Virtual Pad -->
+    <div id="controls">
+        <div class="btn-group">
+            <div class="ctrl-btn" id="left-btn">←</div>
+            <div class="ctrl-btn" id="right-btn">→</div>
+        </div>
+        <div class="ctrl-btn" id="action-btn">PUSH</div>
+    </div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const teams = ["INDIA", "AUSTRALIA", "ENGLAND", "PAKISTAN", "SOUTH AFRICA"];
+    
+    let gameState = 'MENU';
+    let score = 0, wickets = 0, ballsBowled = 0;
+    let currentTeam = "";
+    
+    // Physics & Objects
+    const ball = { x: 200, y: 100, r: 6, dx: 0, dy: 0, active: false, status: 'idle' };
+    const bat = { x: 200, y: 430, w: 40, h: 8, swinging: false };
+    const bowler = { aim: 0, power: 0, charging: false };
+
+    // Input Tracking
+    const input = { left: false, right: false, action: false };
+
+    function init() {
+        const container = document.getElementById('team-list');
+        teams.forEach(t => {
+            const b = document.createElement('button');
+            b.className = 'team-select';
+            b.innerText = t;
+            b.onclick = () => {
+                currentTeam = t;
+                document.getElementById('sc-team').innerText = t;
+                document.getElementById('setup-menu').style.display = 'none';
+                gameState = 'PLAYING';
+                resetBall();
+            };
+            container.appendChild(b);
+        });
+
+        // Touch Listeners
+        setupBtn('left-btn', 'left');
+        setupBtn('right-btn', 'right');
+        setupBtn('action-btn', 'action');
+
+        // Keyboard support
+        window.addEventListener('keydown', e => {
+            if(e.code === 'ArrowLeft') input.left = true;
+            if(e.code === 'ArrowRight') input.right = true;
+            if(e.code === 'Space') input.action = true;
+        });
+        window.addEventListener('keyup', e => {
+            if(e.code === 'ArrowLeft') input.left = false;
+            if(e.code === 'ArrowRight') input.right = false;
+            if(e.code === 'Space') input.action = false;
+        });
+
+        loop();
+    }
+
+    function setupBtn(id, key) {
+        const el = document.getElementById(id);
+        el.addEventListener('touchstart', (e) => { e.preventDefault(); input[key] = true; });
+        el.addEventListener('touchend', (e) => { e.preventDefault(); input[key] = false; });
+        el.addEventListener('mousedown', () => input[key] = true);
+        el.addEventListener('mouseup', () => input[key] = false);
+    }
+
+    function resetBall() {
+        ball.active = false;
+        ball.y = 100; ball.x = 200;
+        ball.dx = 0; ball.dy = 0;
+        ball.status = 'idle';
+        bowler.power = 0;
+        bowler.charging = false;
+        document.getElementById('power-container').style.display = 'block';
+    }
+
+    function update() {
+        if (gameState !== 'PLAYING') return;
+
+        // Bowling Logic
+        if (!ball.active) {
+            if (input.left) bowler.aim = Math.max(-25, bowler.aim - 1.5);
+            if (input.right) bowler.aim = Math.min(25, bowler.aim + 1.5);
+
+            if (input.action) {
+                bowler.charging = true;
+                bowler.power = Math.min(100, bowler.power + 2);
+                document.getElementById('power-fill').style.height = bowler.power + '%';
+            } else if (bowler.charging) {
+                ball.active = true;
+                ball.dx = bowler.aim / 15;
+                ball.dy = 3 + (bowler.power / 15);
+                ball.status = 'bowled';
+                bowler.charging = false;
+                document.getElementById('power-container').style.display = 'none';
+            }
+        }
+
+        // Batting Logic
+        if (input.left && bat.x > 160) bat.x -= 3;
+        if (input.right && bat.x < 240) bat.x += 3;
+
+        if (input.action && ball.active && !bat.swinging && ball.y > 350) {
+            bat.swinging = true;
+            checkHit();
+            setTimeout(() => bat.swinging = false, 200);
+        }
+
+        // Ball Movement
+        if (ball.active) {
+            ball.x += ball.dx;
+            ball.y += ball.dy;
+
+            // Out of bounds
+            if (ball.y < 0 || ball.y > 500 || ball.x < 0 || ball.x > 400) {
+                processResult();
+            }
+
+            // Stumps Check
+            if (ball.y > 435 && ball.status === 'bowled') {
+                if (Math.abs(ball.x - 200) < 15) {
+                    wickets++;
+                    ballsBowled++;
+                    msg("OUT! BOWLED", "red");
+                    resetBall();
+                }
+            }
+        }
+        
+        updateUI();
+    }
+
+    function checkHit() {
+        let dist = Math.hypot(ball.x - bat.x, ball.y - bat.y);
+        if (dist < 30) {
+            ball.status = 'hit';
+            ball.dy = -ball.dy * 1.5;
+            ball.dx = (ball.x - bat.x) / 5;
+            msg("CRACKING SHOT!", "#FFDC00");
+        }
+    }
+
+    function processResult() {
+        let runs = 0;
+        if (ball.status === 'hit') {
+            let d = Math.abs(ball.y - 250);
+            if (d > 200) runs = 6;
+            else if (d > 150) runs = 4;
+            else runs = Math.floor(Math.random() * 4);
+            msg(runs + " RUNS", "#00FF00");
+        } else {
+            msg("DOT BALL", "#ccc");
+        }
+        score += runs;
+        ballsBowled++;
+        resetBall();
+    }
+
+    function msg(t, c) {
+        const m = document.getElementById('msg-display');
+        m.innerText = t; m.style.color = c;
+        setTimeout(() => m.innerText = "", 1500);
+    }
+
+    function updateUI() {
+        document.getElementById('sc-score').innerText = `${score} - ${wickets}`;
+        document.getElementById('sc-overs').innerText = `OVERS: ${Math.floor(ballsBowled/6)}.${ballsBowled%6}`;
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, 400, 500);
+        
+        // Pitch
+        ctx.fillStyle = "#d2b48c";
+        ctx.fillRect(160, 50, 80, 400);
+
+        // Stumps
+        ctx.fillStyle = "white";
+        for(let i=0; i<3; i++) ctx.fillRect(188 + (i*6), 60, 3, 10); // Bowling
+        for(let i=0; i<3; i++) ctx.fillRect(188 + (i*6), 440, 3, 10); // Batting
+
+        // Aim Line
+        if(!ball.active) {
+            ctx.strokeStyle = "rgba(255,255,255,0.3)";
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(200 + bowler.aim, 100);
+            ctx.lineTo(200 + bowler.aim, 440);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        // Bat
+        ctx.fillStyle = bat.swinging ? "#FFDC00" : "#8B4513";
+        ctx.fillRect(bat.x - bat.w/2, bat.y, bat.w, bat.h);
+
+        // Ball
+        if(ball.active || ball.status === 'idle') {
+            ctx.fillStyle = "red";
+            ctx.beginPath();
+            ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2);
+            ctx.fill();
+        }
+    }
+
+    function loop() {
+        update();
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    init();
+</script>
+</body>
+</html>
